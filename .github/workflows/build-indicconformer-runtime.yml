@@ -1,0 +1,45 @@
+name: Build Hindi IndicConformer Runtime
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-indicconformer-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download Hindi IndicConformer INT8 model and Python wheels
+        run: |
+          set -euo pipefail
+          mkdir -p runtime/model runtime/wheels
+          python -m pip install --upgrade pip huggingface_hub
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='OpenVoiceOS/ai4bharat-indicconformer-hi-onnx',
+              local_dir='runtime/model',
+              allow_patterns=['model.int8.onnx', 'config.json', 'vocab.txt', 'README.md'],
+          )
+          PY
+          python -m pip download --only-binary=:all: --dest runtime/wheels 'onnx-asr[cpu,hub]==0.12.0'
+          find runtime -type f -print0 | sort -z | xargs -0 sha256sum > runtime/SHA256SUMS.txt
+          du -sh runtime runtime/model/* runtime/wheels/*
+
+      - name: Upload offline runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: indicconformer-hi-int8-runtime
+          path: runtime/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
