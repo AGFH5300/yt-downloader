@@ -28,23 +28,65 @@ jobs:
             -DWHISPER_BUILD_TESTS=OFF \
             -DWHISPER_BUILD_SERVER=OFF
           cmake --build whisper.cpp/build --config Release -j2 --target whisper-cli
-          mkdir -p runtime
+          mkdir -p runtime model-parts
           cp whisper.cpp/build/bin/whisper-cli runtime/
           chmod +x runtime/whisper-cli
 
-      - name: Download multilingual Large v3 Turbo model
+      - name: Download and split multilingual model
         run: |
           curl -fL --retry 6 --retry-delay 5 \
             'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true' \
-            -o runtime/ggml-large-v3-turbo-q5_0.bin
-          sha256sum runtime/ggml-large-v3-turbo-q5_0.bin | tee runtime/SHA256SUMS.txt
-          test "$(stat -c%s runtime/ggml-large-v3-turbo-q5_0.bin)" -gt 500000000
+            -o ggml-large-v3-turbo-q5_0.bin
+          sha256sum ggml-large-v3-turbo-q5_0.bin | tee runtime/SHA256SUMS.txt
+          test "$(stat -c%s ggml-large-v3-turbo-q5_0.bin)" -gt 500000000
+          split -b 190000000 -d -a 2 ggml-large-v3-turbo-q5_0.bin model-parts/model.part.
+          ls -lh model-parts/
+          test -f model-parts/model.part.00
+          test -f model-parts/model.part.01
+          test -f model-parts/model.part.02
+          test -f model-parts/model.part.03
 
-      - name: Upload runtime artifact
+      - name: Upload CLI and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: whisper-large-v3-turbo-runtime
+          name: whisper-runtime-bin
           path: runtime/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload model part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-model-part-00
+          path: model-parts/model.part.00
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload model part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-model-part-01
+          path: model-parts/model.part.01
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload model part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-model-part-02
+          path: model-parts/model.part.02
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload model part 03
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-model-part-03
+          path: model-parts/model.part.03
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
