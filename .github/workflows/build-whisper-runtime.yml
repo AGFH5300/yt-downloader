@@ -1,0 +1,50 @@
+name: Build Whisper Runtime Artifact
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-whisper-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake curl
+
+      - name: Build static whisper.cpp CLI
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp.git
+          cmake -S whisper.cpp -B whisper.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_SERVER=OFF
+          cmake --build whisper.cpp/build --config Release -j2 --target whisper-cli
+          mkdir -p runtime
+          cp whisper.cpp/build/bin/whisper-cli runtime/
+          chmod +x runtime/whisper-cli
+
+      - name: Download multilingual Large v3 Turbo model
+        run: |
+          curl -fL --retry 6 --retry-delay 5 \
+            'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true' \
+            -o runtime/ggml-large-v3-turbo-q5_0.bin
+          sha256sum runtime/ggml-large-v3-turbo-q5_0.bin | tee runtime/SHA256SUMS.txt
+          test "$(stat -c%s runtime/ggml-large-v3-turbo-q5_0.bin)" -gt 500000000
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-large-v3-turbo-runtime
+          path: runtime/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
