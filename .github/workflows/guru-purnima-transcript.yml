@@ -1,0 +1,148 @@
+name: Guru Purnima transcript extraction
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  captions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yt-dlp
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install yt-dlp
+
+      - name: Fetch source metadata and captions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          URL='https://www.youtube.com/watch?v=8UqUAN4IIRQ'
+          yt-dlp --skip-download --write-info-json --write-auto-subs --write-subs \
+            --sub-langs 'hi.*,en.*' --sub-format 'vtt' \
+            -o 'output/source.%(ext)s' "$URL" || true
+          find output -maxdepth 1 -type f -printf '%f\n' | sort | tee output/files.txt
+
+      - name: Build cleaned segment transcript
+        shell: bash
+        run: |
+          cat > /tmp/clean_vtt.py <<'PY'
+          import glob, html, json, os, re
+          from pathlib import Path
+
+          START = 1*3600 + 53*60 + 50
+          END = START + 2825.624
+
+          def ts_seconds(s):
+              s=s.strip().replace(',', '.')
+              parts=s.split(':')
+              if len(parts)==3:
+                  h,m,sec=parts
+              else:
+                  h='0'; m,sec=parts
+              return int(h)*3600+int(m)*60+float(sec)
+
+          def fmt(sec):
+              sec=max(0,sec)
+              h=int(sec//3600); sec-=h*3600
+              m=int(sec//60); sec-=m*60
+              return f'{h:02d}:{m:02d}:{int(sec):02d}'
+
+          def clean_text(s):
+              s=re.sub(r'<[^>]+>', '', s)
+              s=html.unescape(s)
+              s=re.sub(r'\s+', ' ', s).strip()
+              return s
+
+          candidates=[]
+          for p in glob.glob('output/*.vtt'):
+              name=os.path.basename(p).lower()
+              score=(0 if '.hi' in name or 'hi-' in name else 10, 0 if 'orig' in name else 1, len(name))
+              candidates.append((score,p))
+          candidates.sort()
+
+          if not candidates:
+              Path('output/NO_CAPTIONS_FOUND.txt').write_text('No subtitle or automatic-caption VTT file was returned by YouTube.\n', encoding='utf-8')
+              raise SystemExit(0)
+
+          best=candidates[0][1]
+          raw=Path(best).read_text(encoding='utf-8', errors='replace').splitlines()
+          cues=[]
+          i=0
+          while i < len(raw):
+              line=raw[i].strip()
+              if '-->' not in line:
+                  i+=1; continue
+              left,right=line.split('-->',1)
+              try:
+                  st=ts_seconds(left.split()[0]); en=ts_seconds(right.strip().split()[0])
+              except Exception:
+                  i+=1; continue
+              i+=1
+              texts=[]
+              while i<len(raw) and raw[i].strip():
+                  texts.append(raw[i].strip()); i+=1
+              text=clean_text(' '.join(texts))
+              if text and en>=START and st<=END:
+                  cues.append((max(st,START)-START, min(en,END)-START, text))
+              i+=1
+
+          # Remove exact/repeated rolling-caption text while preserving changes.
+          cleaned=[]
+          prev=''
+          for st,en,text in cues:
+              if text==prev:
+                  continue
+              # YouTube rolling captions often repeat the previous phrase and append words.
+              if prev and text.startswith(prev) and len(text)>len(prev):
+                  text=text[len(prev):].strip(' -–—,')
+              elif prev and prev.startswith(text):
+                  continue
+              if not text:
+                  continue
+              cleaned.append((st,en,text))
+              prev=(prev+' '+text).strip() if len(prev)<160 else text
+
+          # De-duplicate adjacent lines more conservatively.
+          final=[]
+          for st,en,text in cleaned:
+              if final and text==final[-1][2]:
+                  final[-1]=(final[-1][0],en,text)
+              else:
+                  final.append((st,en,text))
+
+          txt=[]
+          srt=[]
+          for idx,(st,en,text) in enumerate(final,1):
+              txt.append(f'[{fmt(st)}] {text}')
+              def srtfmt(x):
+                  ms=int(round((x-int(x))*1000)); whole=int(x)
+                  h=whole//3600; m=(whole%3600)//60; sec=whole%60
+                  if ms==1000: sec+=1; ms=0
+                  return f'{h:02d}:{m:02d}:{sec:02d},{ms:03d}'
+              srt += [str(idx), f'{srtfmt(st)} --> {srtfmt(en)}', text, '']
+
+          header=(
+              'Source: YouTube video 8UqUAN4IIRQ\n'
+              'Extracted segment: original 01:53:50 to approximately 02:40:55\n'
+              f'Caption source file: {os.path.basename(best)}\n'
+              'Note: This is a cleaned automatic-caption transcript and may contain recognition errors.\n\n'
+          )
+          Path('output/transcript_youtube_captions.txt').write_text(header+'\n'.join(txt)+'\n', encoding='utf-8')
+          Path('output/transcript_youtube_captions.srt').write_text('\n'.join(srt), encoding='utf-8')
+          Path('output/caption_selection.json').write_text(json.dumps({'selected':best,'candidates':[p for _,p in candidates],'cue_count':len(final)},indent=2),encoding='utf-8')
+          print(json.dumps({'selected':best,'cue_count':len(final)}, indent=2))
+          PY
+          python /tmp/clean_vtt.py
+
+      - name: Upload transcript artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: guru-purnima-youtube-captions
+          path: output/
+          retention-days: 7
