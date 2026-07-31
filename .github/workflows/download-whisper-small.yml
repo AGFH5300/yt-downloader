@@ -1,0 +1,33 @@
+name: Download Whisper Small Model
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/download-whisper-small.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download multilingual Small q5 model
+        run: |
+          mkdir -p model
+          curl -fL --retry 6 --retry-delay 5 \
+            'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true' \
+            -o model/ggml-small-q5_1.bin
+          sha256sum model/ggml-small-q5_1.bin | tee model/SHA256SUMS-small.txt
+          test "$(stat -c%s model/ggml-small-q5_1.bin)" -gt 150000000
+
+      - name: Upload Small model
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-small-q5-model
+          path: model/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
