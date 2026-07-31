@@ -1,0 +1,92 @@
+name: Package Faster Whisper Small
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/package-faster-whisper-small.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download Python wheelhouse
+        run: |
+          python -m pip install --upgrade pip
+          mkdir -p wheelhouse
+          python -m pip download --only-binary=:all: --dest wheelhouse faster-whisper
+          ls -lh wheelhouse
+
+      - name: Download Faster Whisper Small model
+        run: |
+          python -m pip install --no-index --find-links wheelhouse faster-whisper
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id='Systran/faster-whisper-small',
+              local_dir='faster-whisper-small',
+              local_dir_use_symlinks=False,
+          )
+          PY
+          du -sh faster-whisper-small
+          tar -cf faster-whisper-small.tar faster-whisper-small
+          sha256sum faster-whisper-small.tar > MODEL_SHA256.txt
+          mkdir -p model-parts
+          split -b 180000000 -d -a 2 faster-whisper-small.tar model-parts/model.part.
+          ls -lh model-parts
+
+      - name: Upload wheelhouse
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-cp313-wheelhouse
+          path: wheelhouse/
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload model metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-small-metadata
+          path: MODEL_SHA256.txt
+          retention-days: 1
+
+      - name: Upload model part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-small-part-00
+          path: model-parts/model.part.00
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload model part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-small-part-01
+          path: model-parts/model.part.01
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload model part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-small-part-02
+          path: model-parts/model.part.02
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload model part 03 if present
+        if: ${{ hashFiles('model-parts/model.part.03') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: faster-whisper-small-part-03
+          path: model-parts/model.part.03
+          compression-level: 0
+          retention-days: 1
