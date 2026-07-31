@@ -1,0 +1,185 @@
+name: Guru Purnima Whisper transcription
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install transcription tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install yt-dlp faster-whisper
+
+      - name: Download the requested video segment as audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output work
+          URL='https://www.youtube.com/watch?v=8UqUAN4IIRQ'
+          yt-dlp -f 'bestaudio/best' \
+            --download-sections '*01:53:50-inf' \
+            --force-keyframes-at-cuts \
+            -x --audio-format wav --audio-quality 0 \
+            -o 'work/guru_segment.%(ext)s' "$URL"
+          ffmpeg -hide_banner -y -i work/guru_segment.wav -ac 1 -ar 16000 \
+            -af 'highpass=f=70,lowpass=f=7800,afftdn=nr=6:nf=-42' \
+            work/guru_segment_clean.wav
+          ffprobe -v error -show_entries format=duration -of default=nw=1 work/guru_segment_clean.wav | tee output/audio_duration.txt
+
+      - name: Transcribe with large-v3-turbo
+        shell: bash
+        env:
+          OMP_NUM_THREADS: '4'
+          MKL_NUM_THREADS: '4'
+        run: |
+          cat > /tmp/transcribe.py <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from faster_whisper import WhisperModel
+
+          audio = 'work/guru_segment_clean.wav'
+          out = Path('output')
+          out.mkdir(exist_ok=True)
+
+          model = WhisperModel(
+              'large-v3-turbo',
+              device='cpu',
+              compute_type='int8',
+              cpu_threads=max(2, os.cpu_count() or 4),
+              num_workers=1,
+          )
+
+          initial_prompt = (
+              'यह राधा कृपा परिवार का गुरु पूर्णिमा महा महोत्सव 2026 है। '
+              'हिंदी सत्संग, भजन, राधा नाम, गुरु वंदना, आध्यात्मिक प्रवचन, '
+              'Radha Kripa Pariwaar, Guru Purnima Maha Mahotsav.'
+          )
+
+          segments, info = model.transcribe(
+              audio,
+              language='hi',
+              task='transcribe',
+              beam_size=5,
+              best_of=5,
+              patience=1.2,
+              temperature=[0.0, 0.2, 0.4],
+              compression_ratio_threshold=2.4,
+              log_prob_threshold=-1.0,
+              no_speech_threshold=0.6,
+              condition_on_previous_text=True,
+              prompt_reset_on_temperature=0.5,
+              initial_prompt=initial_prompt,
+              word_timestamps=True,
+              vad_filter=True,
+              vad_parameters=dict(
+                  min_silence_duration_ms=350,
+                  speech_pad_ms=300,
+                  threshold=0.35,
+                  min_speech_duration_ms=150,
+                  max_speech_duration_s=28,
+              ),
+          )
+
+          data=[]
+          for s in segments:
+              text=re.sub(r'\s+', ' ', s.text).strip()
+              if not text:
+                  continue
+              words=[]
+              if s.words:
+                  for w in s.words:
+                      words.append({
+                          'start': w.start,
+                          'end': w.end,
+                          'word': w.word,
+                          'probability': w.probability,
+                      })
+              data.append({
+                  'id': s.id,
+                  'start': s.start,
+                  'end': s.end,
+                  'text': text,
+                  'avg_logprob': s.avg_logprob,
+                  'compression_ratio': s.compression_ratio,
+                  'no_speech_prob': s.no_speech_prob,
+                  'words': words,
+              })
+
+          def clock(sec, ms=False):
+              sec=max(0.0,float(sec)); whole=int(sec); frac=sec-whole
+              h=whole//3600; m=(whole%3600)//60; s=whole%60
+              if ms:
+                  milli=int(round(frac*1000))
+                  if milli==1000:
+                      whole+=1; milli=0; h=whole//3600; m=(whole%3600)//60; s=whole%60
+                  return f'{h:02d}:{m:02d}:{s:02d},{milli:03d}'
+              return f'{h:02d}:{m:02d}:{s:02d}'
+
+          # Flag only genuinely weak segments. Keep text but visibly mark uncertainty.
+          def uncertain(seg):
+              probs=[w['probability'] for w in seg['words'] if w['word'].strip()]
+              low_word=(sum(probs)/len(probs) < 0.45) if probs else False
+              return seg['avg_logprob'] < -0.85 or seg['compression_ratio'] > 2.35 or low_word
+
+          txt_lines=[]
+          clean_lines=[]
+          srt_lines=[]
+          prev_end=0.0
+          idx=1
+          for seg in data:
+              gap=seg['start']-prev_end
+              if gap>=8:
+                  label='[संगीत / विराम]' if gap<45 else '[लंबा संगीत / विराम]'
+                  txt_lines.append(f'[{clock(prev_end)}–{clock(seg["start"])}] {label}')
+                  clean_lines.append(label)
+              mark=' [अस्पष्ट—जाँच आवश्यक]' if uncertain(seg) else ''
+              txt_lines.append(f'[{clock(seg["start"])}] {seg["text"]}{mark}')
+              clean_lines.append(seg['text']+mark)
+              srt_lines += [str(idx), f'{clock(seg["start"],True)} --> {clock(seg["end"],True)}', seg['text']+mark, '']
+              idx+=1
+              prev_end=max(prev_end,seg['end'])
+
+          header=(
+              'पूर्ण प्रतिलेख — राधा कृपा परिवार गुरु पूर्णिमा महा महोत्सव 2026\n'
+              'खंड: मूल वीडियो 01:53:50 से आगे (लगभग 47 मिनट)\n'
+              'स्वचालित मॉडल: faster-whisper large-v3-turbo, हिंदी\n'
+              'नोट: जहाँ मॉडल का विश्वास कम था वहाँ [अस्पष्ट—जाँच आवश्यक] जोड़ा गया है।\n\n'
+          )
+          (out/'Guru_Purnima_2026_timestamped_transcript.txt').write_text(header+'\n'.join(txt_lines)+'\n',encoding='utf-8')
+          (out/'Guru_Purnima_2026_readable_transcript.txt').write_text(header+'\n'.join(clean_lines)+'\n',encoding='utf-8')
+          (out/'Guru_Purnima_2026_subtitles.srt').write_text('\n'.join(srt_lines),encoding='utf-8')
+          (out/'Guru_Purnima_2026_transcript_detailed.json').write_text(json.dumps({
+              'language': info.language,
+              'language_probability': info.language_probability,
+              'duration': info.duration,
+              'duration_after_vad': info.duration_after_vad,
+              'segments': data,
+          },ensure_ascii=False,indent=2),encoding='utf-8')
+          summary={
+              'language': info.language,
+              'language_probability': info.language_probability,
+              'duration': info.duration,
+              'duration_after_vad': info.duration_after_vad,
+              'segment_count': len(data),
+              'uncertain_segment_count': sum(uncertain(x) for x in data),
+          }
+          (out/'transcription_summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/transcribe.py
+
+      - name: Upload transcript artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: guru-purnima-whisper-transcript
+          path: output/
+          retention-days: 7
