@@ -20,13 +20,13 @@ _PLAYLIST_ID = re.compile(r"[A-Za-z0-9_-]{2,150}\Z")
 def is_youtube_playlist_url(url: str) -> bool:
     # This CLI is for YouTube playlists only. yt-dlp otherwise supports
     # generic HTTP and many other extractors beyond this command's scope.
-    if len(url) > 2048 or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+    if len(url) > 2048 or "#" in url or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
         return False
     try:
         parsed = urlsplit(url)
         if (parsed.scheme != "https" or parsed.hostname not in _YOUTUBE_HOSTS
                 or parsed.username is not None or parsed.password is not None
-                or parsed.port is not None or parsed.fragment
+                or parsed.port is not None
                 or parsed.path not in {"/playlist", "/watch"}):
             return False
         ids = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=32).get("list", [])
