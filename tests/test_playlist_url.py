@@ -79,6 +79,10 @@ class PlaylistURLGuard(unittest.TestCase):
             "https://www.youtube.com/playlist?list=PLsafe_ABC-01&list=PLother_123",
             "https://www.youtube.com/playlist?list=%2Fetc%2Fpasswd",
             "https://www.youtube.com/playlist?list=PLsafe_ABC-01\nX-Evil: yes",
+            "https://www.youtube.com/playlist?list=PLsafe_ABC-01#",
+            "https://www.youtube.com/playlist?list=PLsafe_ABC-01#section",
+            "https://www.youtube.com/playlist?list=PLsafe_ABC-01&" + "&".join(f"q{i}=1" for i in range(33)),
+            "https://www.youtube.com/playlist?list=" + "A" * 2050,
         ]
         for url in invalid:
             with self.subTest(url=url):
